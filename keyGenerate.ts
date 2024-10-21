@@ -233,7 +233,7 @@ const main = async () => {
 
     if (!bitwardenItemName) {
       throw new Error("Bitwarden item name not provided.");
-
+    }
 
     // 1. Generate secrets
     const secrets = generateSecrets();
