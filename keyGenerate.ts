@@ -233,7 +233,7 @@ const main = async () => {
 
     if (!bitwardenItemName) {
       throw new Error("Bitwarden item name not provided.");
-    }
+
 
     // 1. Generate secrets
     const secrets = generateSecrets();
@@ -242,8 +242,7 @@ const main = async () => {
     // 2. Generate wallet
     const wallet = new Wallet(generatePrivateKey());
     // console.log("Generated wallet address:", wallet.address);
-    console.log("Generated wallet:", wallet.address);
-    console.log("Generated wallet:", wallet.privateKey);
+
 
     // 3. Encrypt privateKey with secrets
     const encryptedPrivateKey = encryptPrivateKey(wallet.privateKey, secrets);
