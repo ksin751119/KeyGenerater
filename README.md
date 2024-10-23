@@ -8,9 +8,14 @@ A script for generating, managing, and securely storing keys using Bitwarden.
 ## Overview
 
 This script automates the process of:
-1. Generating cryptographic keys
-2. Encrypting the keys using AWS KMS (Key Management Service)
-3. Securely storing the encrypted keys in Bitwarden
+1. Generating a key using hardware information, timestamp, and random number
+2. Generating an encryption secret using hardware information, timestamp, and random number
+3. Encrypting the key using the secret
+4. Encrypting the secret using AWS KMS
+5. Storing the encrypted key and secret in AWS Secrets Manager
+6. Storing the private key in Bitwarden
+
+![KeyGenerate.ts Flowchart](script_flow.png)
 
 ## Prerequisites
 
@@ -52,7 +57,8 @@ Run the script:
 This will:
 1. Generate a new key
 2. Encrypt the key using AWS KMS
-3. Upload the encrypted key to Bitwarden
+3. Upload the encrypted key to AWS Secrets Manager
+4. Store the private key in Bitwarden
 
 
 ## Ubuntu Environment Setup

@@ -64,31 +64,38 @@ function getHardwareInfo(): string {
   return `${platform}-${release}-${arch}-${cpus[0].model}-${totalMemory}`;
 }
 
-function generateSecrets(): Buffer {
+async function generateSecrets(customSeed?: string): Promise<Buffer> {
   const hardwareInfo = getHardwareInfo();
   const timestamp = Date.now().toString();
   const randomData = crypto.randomBytes(32);
 
-  const combinedData = Buffer.concat([
+  let combinedData = Buffer.concat([
     Buffer.from(hardwareInfo),
     Buffer.from(timestamp),
     randomData
   ]);
+
+  if (customSeed) {
+    combinedData = Buffer.concat([combinedData, Buffer.from(customSeed)]);
+  }
 
   return crypto.createHash('sha256').update(combinedData).digest();
 }
 
-function generatePrivateKey(): string {
+async function generatePrivateKey(customSeed?: string): Promise<string> {
   const hardwareInfo = getHardwareInfo();
   const timestamp = Date.now().toString();
   const randomData = crypto.randomBytes(32);
 
-  const combinedData = Buffer.concat([
+  let combinedData = Buffer.concat([
     Buffer.from(hardwareInfo),
     Buffer.from(timestamp),
     randomData
   ]);
 
+  if (customSeed) {
+    combinedData = Buffer.concat([combinedData, Buffer.from(customSeed)]);
+  }
 
   const seed = crypto.createHash('sha256').update(combinedData).digest();
   const hdNode = HDNodeWallet.fromSeed(seed);
@@ -200,77 +207,104 @@ async function updateOrCreateBitwardenItem(wallet: Wallet, itemName: string, col
   }
 }
 
-const main = async () => {
-  try {
-    // Check required environment variables
-    const requiredEnvVars = ['BW_SESSION', 'KMS_KEY_ARN', 'SECRET_ARN', 'BITWARDEN_COLLECTION_NAME', 'BITWARDEN_ITEM_NAME'];
-    for (const envVar of requiredEnvVars) {
-      if (!process.env[envVar]) {
-        throw new Error(`${envVar} environment variable is not set`);
-      }
-    }
+async function generateAndEncryptWallet() {
+  log("開始生成和加密錢包");
+  // 詢問使用者是否要輸入自定義種子
+  const useCustomSeed = await getUserInput("Do you want to enter a custom seed? (y/n): ");
+  let customSeed: string | undefined;
 
-    // List all collections
-    listCollections();
+  if (useCustomSeed.toLowerCase() === 'y') {
+    customSeed = await getUserInput("Enter your custom seed: ");
+  }
 
-    // Prompt user to input collection name or use default value
-    let bitwardenCollectionName = process.env.BITWARDEN_COLLECTION_NAME || '';
-    const inputCollectionName = await getUserInput(`Enter Bitwarden collection name (press Enter to use default "${bitwardenCollectionName}"): `);
-    if (inputCollectionName) {
-      bitwardenCollectionName = inputCollectionName;
-    }
+  log("生成秘密和錢包");
+  const secrets = await generateSecrets(customSeed);
+  const wallet = new Wallet(await generatePrivateKey(customSeed));
 
-    if (!bitwardenCollectionName) {
-      throw new Error("Bitwarden collection name not provided.");
-    }
+  log("加密私鑰和秘密");
+  const encryptedPrivateKey = encryptPrivateKey(wallet.privateKey, secrets);
+  const kmsKeyArn = process.env.KMS_KEY_ARN!;
+  const encryptedSecrets = await encryptSecretsWithKMS(secrets, kmsKeyArn);
 
-    // Prompt user to input item name or use default value
-    let bitwardenItemName = process.env.BITWARDEN_ITEM_NAME || '';
-    const inputItemName = await getUserInput(`Enter Bitwarden item name (press Enter to use default "${bitwardenItemName}"): `);
-    if (inputItemName) {
-      bitwardenItemName = inputItemName;
-    }
+  log("錢包生成和加密完成");
+  return { wallet, kmsKeyArn, encryptedPrivateKey, encryptedSecrets };
+}
 
-    if (!bitwardenItemName) {
-      throw new Error("Bitwarden item name not provided.");
-    }
+async function saveToSecretsManagerAndBitwarden(wallet: Wallet, jsonData: any) {
+  log("開始保存到 Secrets Manager 和 Bitwarden");
 
-    // 1. Generate secrets
-    const secrets = generateSecrets();
-    // console.log("Generated secrets (hex):", secrets.toString('hex'));
+  // 保存到 Secrets Manager
+  const secretArn = process.env.SECRET_ARN!;
+  log("保存到 Secrets Manager");
+  await saveToSecretsManager(jsonData, secretArn);
 
-    // 2. Generate wallet
-    const wallet = new Wallet(generatePrivateKey());
-    // console.log("Generated wallet address:", wallet.address);
-
-
-    // 3. Encrypt privateKey with secrets
-    const encryptedPrivateKey = encryptPrivateKey(wallet.privateKey, secrets);
-    console.log("Encrypted privateKey (base64):", encryptedPrivateKey);
-
-    // 4. Encrypt secrets with KMS
-    const kmsKeyArn = process.env.KMS_KEY_ARN!;
-    const encryptedSecrets = await encryptSecretsWithKMS(secrets, kmsKeyArn);
-    console.log("KMS encrypted secrets (base64):", encryptedSecrets);
-
-    // 5. Prepare JSON data
-    const jsonData = {
-      kmsArn: kmsKeyArn,
-      encryptedPrivateKey,
-      encryptedSecrets,
-    };
-
-    // 6. Save JSON to Secrets Manager
-    const secretArn = process.env.SECRET_ARN!;
-    await saveToSecretsManager(jsonData, secretArn);
-
-    // 7. Update or create Bitwarden item
+  // 檢查 BITWARDEN_ENABLED 環境變數
+  if (process.env.BITWARDEN_ENABLED === 'true') {
+    log("Bitwarden 已啟用，開始 Bitwarden 操作");
+    const bitwardenCollectionName = await getBitwardenCollectionName();
+    const bitwardenItemName = await getBitwardenItemName();
+    log(`更新或創建 Bitwarden 項目: ${bitwardenItemName}`);
     await updateOrCreateBitwardenItem(wallet, bitwardenItemName, bitwardenCollectionName);
+  } else {
+    log("Bitwarden 未啟用，跳過 Bitwarden 操作");
+  }
 
-    console.log("All operations completed successfully");
+  log("保存操作完成");
+}
+
+async function getBitwardenCollectionName(): Promise<string> {
+  listCollections();
+  let bitwardenCollectionName = process.env.BITWARDEN_COLLECTION_NAME || '';
+  const inputCollectionName = await getUserInput(`Enter Bitwarden collection name (press Enter to use default "${bitwardenCollectionName}"): `);
+  return inputCollectionName || bitwardenCollectionName;
+}
+
+async function getBitwardenItemName(): Promise<string> {
+  let bitwardenItemName = process.env.BITWARDEN_ITEM_NAME || '';
+  const inputItemName = await getUserInput(`Enter Bitwarden item name (press Enter to use default "${bitwardenItemName}"): `);
+  return inputItemName || bitwardenItemName;
+}
+
+// 添加一個簡單的日誌函數
+function log(message: string) {
+  console.log(`[${new Date().toISOString()}] ${message}`);
+}
+
+const main = async () => {
+  log("開始主程序");
+
+  try {
+    log("檢查必要的環境變量");
+    checkRequiredEnvVars();
+
+    const { wallet, kmsKeyArn, encryptedPrivateKey, encryptedSecrets } = await generateAndEncryptWallet();
+
+    log("準備 JSON 數據");
+    const jsonData = { kmsArn: kmsKeyArn, encryptedPrivateKey, encryptedSecrets };
+
+    log("開始保存數據");
+    await saveToSecretsManagerAndBitwarden(wallet, jsonData);
+
+    log("所有操作已成功完成");
   } catch (error) {
-    console.error("An error occurred:", error);
+    console.error("發生錯誤:", error);
   }
 };
 
+function checkRequiredEnvVars() {
+  const requiredEnvVars = ['KMS_KEY_ARN', 'SECRET_ARN'];
+
+  // 只有在 BITWARDEN_ENABLED 為 true 時才檢查 Bitwarden 相關的環境變量
+  if (process.env.BITWARDEN_ENABLED === 'true') {
+    requiredEnvVars.push('BW_SESSION', 'BITWARDEN_COLLECTION_NAME', 'BITWARDEN_ITEM_NAME');
+  }
+
+  for (const envVar of requiredEnvVars) {
+    if (!process.env[envVar]) {
+      throw new Error(`${envVar} environment variable is not set`);
+    }
+  }
+}
+
+log("程序開始執行");
 main().catch(console.error);

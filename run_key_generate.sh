@@ -1,45 +1,54 @@
 #!/bin/bash
 
-# Set necessary environment variables
-export KMS_KEY_ARN=
-export SECRET_ARN=
-export BITWARDEN_COLLECTION_NAME=
-export BITWARDEN_ITEM_NAME=
-export AWS_REGION=
-export BW_SERVER=
+# 設置必要的環境變量
+export KMS_KEY_ARN=""
+export SECRET_ARN=""
+export BITWARDEN_COLLECTION_NAME=""
+export BITWARDEN_ITEM_NAME=""
+export AWS_REGION=""
+export BW_SERVER=""
+
+# 新增 BITWARDEN_ENABLED 環境變數
+export BITWARDEN_ENABLED=false
 
 
 
 
-if ! bw login --check; then
-    echo "Bitwarden not logged in, proceeding with login..."
+# 詢問是否使用 Bitwarden
+read -p "是否需要使用 Bitwarden？(y/n): " use_bitwarden
 
-    # Attempt to log out (if already logged in)
-    bw logout || true
+if [ "$use_bitwarden" = "y" ]; then
+    export BITWARDEN_ENABLED=true
+    if ! bw login --check; then
+        echo "Bitwarden 未登入，正在進行登入操作..."
 
-    # Set server configuration
-    bw config server $BW_SERVER
+        # 嘗試登出（如果已登錄）
+        bw logout || true
 
-    # Log in to Bitwarden
-    bw login
+        # 設置服務器配置
+        bw config server $BW_SERVER
 
-    echo "Bitwarden login successful."
+        # 登錄 Bitwarden
+        bw login
+
+        echo "Bitwarden 登入成功。"
+    else
+        echo "Bitwarden 已經登入。"
+    fi
+
+    # 獲取會話密鑰並設置為環境變量
+    export BW_SESSION=$(bw unlock --raw)
+
+    # 如果 unlock 失敗，則退出腳本
+    if [ $? -ne 0 ]; then
+        echo "無法解鎖 Bitwarden vault。請檢查您的主密碼。"
+        exit 1
+    fi
+
+    echo "Bitwarden vault 已解鎖。會話已設置。"
 else
-    echo "Bitwarden already logged in."
-fi
-# Get session key and set as environment variable
-export BW_SESSION=$(bw unlock --raw)
-
-# If unlock fails, exit the script
-if [ $? -ne 0 ]; then
-    echo "Unable to unlock Bitwarden vault. Please check your master password."
-    exit 1
+    echo "不使用 Bitwarden。"
 fi
 
-echo "Bitwarden vault unlocked. Session set."
-
-
-
-
-# Run keyGenerate.ts
+# 運行 keyGenerate.ts
 npx ts-node keyGenerate.ts
