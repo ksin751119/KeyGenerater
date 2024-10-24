@@ -286,6 +286,9 @@ const main = async () => {
     await saveToSecretsManagerAndBitwarden(wallet, jsonData);
 
     log("所有操作已成功完成");
+
+    // 印出錢包地址
+    log(`生成的錢包地址: ${wallet.address}`);
   } catch (error) {
     console.error("發生錯誤:", error);
   }
