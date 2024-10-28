@@ -13,29 +13,33 @@ import dotenv from "dotenv";
 import { execSync } from "child_process";
 import { encryptData } from "./CryptoExUtils";
 import os from 'os';
-import readline from 'readline';
+import * as bip39 from 'bip39';
+import { Command } from 'commander';
 
 dotenv.config();
+
+// 定義可用的金鑰類型
+type KeyType = 'private-key' | 'mnemonic';
+
+// 定義助記詞長度類型
+type MnemonicLength = 12 | 24;
+
+// 設定命令行選項
+const program = new Command();
+program
+  .option('--keyType <type>', '指定金鑰類型 (private-key 或 mnemonic)', 'private-key')
+  .option('--bitwardenEnable', '啟用 Bitwarden 整合', false)
+  .option('--customSeed <seed>', '自定義種子')
+  .option('--mnemonicLength <length>', '助記詞長度 (12 或 24)', '24')
+  .parse(process.argv);
+
+const options = program.opts();
 
 const secretsClient = new SecretsManagerClient({ region: process.env.AWS_REGION });
 const kmsClient = new KMSClient({ region: process.env.AWS_REGION });
 
 function runCommand(command: string): string {
   return execSync(command, { encoding: 'utf-8' });
-}
-
-function getUserInput(question: string): Promise<string> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-  });
-
-  return new Promise(resolve => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer);
-    });
-  });
 }
 
 function listCollections(): void {
@@ -102,6 +106,35 @@ async function generatePrivateKey(customSeed?: string): Promise<string> {
   return hdNode.privateKey;
 }
 
+async function generateMnemonic(customSeed?: string): Promise<{ mnemonic: string; privateKey: string }> {
+  const hardwareInfo = getHardwareInfo();
+  const timestamp = Date.now().toString();
+  const randomData = crypto.randomBytes(32);
+
+  let combinedData = Buffer.concat([
+    Buffer.from(hardwareInfo),
+    Buffer.from(timestamp),
+    randomData
+  ]);
+
+  if (customSeed) {
+    combinedData = Buffer.concat([combinedData, Buffer.from(customSeed)]);
+  }
+
+  // 根據選擇的助記詞長度決定熵的大小
+  const mnemonicLength = parseInt(options.mnemonicLength) as MnemonicLength;
+  const entropyBytes = mnemonicLength === 12 ? 16 : 32; // 12字=128位元(16字節), 24字=256位元(32字節)
+
+  const entropy = crypto.createHash('sha256').update(combinedData).digest().subarray(0, entropyBytes);
+  const mnemonic = bip39.entropyToMnemonic(entropy);
+  const wallet = Wallet.fromPhrase(mnemonic);
+
+  return {
+    mnemonic,
+    privateKey: wallet.privateKey
+  };
+}
+
 function encryptPrivateKey(privateKey: string, secrets: Buffer): string {
   const encryptedPrivateKey = encryptData(Buffer.from(privateKey), secrets);
   return encryptedPrivateKey.toString('base64');
@@ -125,16 +158,16 @@ async function saveToSecretsManager(data: any, secretArn: string) {
         SecretString: secretString,
       })
     );
-    console.log("Successfully updated secret");
+    log("Successfully updated secret");
   } catch (error) {
     if ((error as any).name === 'ResourceNotFoundException') {
       await secretsClient.send(
         new CreateSecretCommand({
-          Name: secretArn.split(':').pop(), // Extract secret name from ARN
+          Name: secretArn.split(':').pop(),
           SecretString: secretString,
         })
       );
-      console.log("Successfully created new secret");
+      log("Successfully created new secret");
     } else {
       throw error;
     }
@@ -143,8 +176,7 @@ async function saveToSecretsManager(data: any, secretArn: string) {
 
 async function updateOrCreateBitwardenItem(wallet: Wallet, itemName: string, collectionName: string) {
   try {
-    // Get collection ID
-    console.log("Getting collection ID...");
+    log("Getting collection ID...");
     const getCollectionCommand = `bw list collections --search "${collectionName}" --session ${process.env.BW_SESSION}`;
     const collectionOutput = runCommand(getCollectionCommand);
     const collections = JSON.parse(collectionOutput);
@@ -153,53 +185,55 @@ async function updateOrCreateBitwardenItem(wallet: Wallet, itemName: string, col
     }
     const collectionId = collections[0].id;
 
-    // Read existing item
-    console.log("Reading item...");
+    log("Reading item...");
     const getItemCommand = `bw get item "${itemName}" --session ${process.env.BW_SESSION}`;
     let item;
     try {
       const itemJson = runCommand(getItemCommand);
       item = JSON.parse(itemJson);
     } catch (error) {
-      console.log("Item does not exist, will create a new item");
+      log("Item does not exist, will create a new item");
     }
 
-    const itemJson = runCommand(getItemCommand);
-    let itemData = JSON.parse(itemJson);
+    const itemData = {
+      organizationId: null,
+      collectionIds: [collectionId],
+      folderId: null,
+      type: 1,
+      name: itemName,
+      notes: null,
+      favorite: false,
+      fields: [
+        {
+          name: "address",
+          value: wallet.address,
+          type: 0
+        },
+        {
+          name: "privateKey",
+          value: wallet.privateKey,
+          type: 1
+        }
+      ],
+      login: null,
+      secureNote: null,
+      card: null,
+      identity: null
+    };
 
-    // Modify item
-    itemData.fields = [
-      {
-        name: "address",
-        value: wallet.address,
-        type: 0
-      },
-      {
-        name: "privateKey",
-        value: wallet.privateKey,
-        type: 1
-      }
-    ];
-
-
-
-    let command;
     if (item) {
       const encodeCommand = `echo '${JSON.stringify(itemData)}' | bw encode`;
-    const encodedItem = runCommand(encodeCommand);
-    console.log("Updating test item...");
-    const updateItemCommand = `bw edit item ${itemData.id} ${encodedItem} --session ${process.env.BW_SESSION}`;
-    runCommand(updateItemCommand);
-
-
-      console.log("Successfully updated wallet information in Bitwarden");
+      const encodedItem = runCommand(encodeCommand);
+      log("Updating item...");
+      const updateItemCommand = `bw edit item ${item.id} ${encodedItem} --session ${process.env.BW_SESSION}`;
+      runCommand(updateItemCommand);
+      log("Successfully updated wallet information in Bitwarden");
     } else {
-      // Create new item
       const encodeCommand = `echo '${JSON.stringify(itemData)}' | bw encode`;
       const encodedItem = runCommand(encodeCommand);
-      command = `bw create item ${encodedItem} --session ${process.env.BW_SESSION}`;
-      runCommand(command);
-      console.log("Successfully created new wallet item in Bitwarden");
+      const createCommand = `bw create item ${encodedItem} --session ${process.env.BW_SESSION}`;
+      runCommand(createCommand);
+      log("Successfully created new wallet item in Bitwarden");
     }
   } catch (error) {
     console.error("Failed to operate Bitwarden:", error);
@@ -207,19 +241,21 @@ async function updateOrCreateBitwardenItem(wallet: Wallet, itemName: string, col
   }
 }
 
-async function generateAndEncryptWallet() {
-  log("開始生成和加密錢包");
-  // 詢問使用者是否要輸入自定義種子
-  const useCustomSeed = await getUserInput("Do you want to enter a custom seed? (y/n): ");
-  let customSeed: string | undefined;
-
-  if (useCustomSeed.toLowerCase() === 'y') {
-    customSeed = await getUserInput("Enter your custom seed: ");
-  }
+async function generateAndEncryptWallet(keyType: KeyType, customSeed?: string) {
+  log(`開始生成和加密錢包 (類型: ${keyType})`);
 
   log("生成秘密和錢包");
   const secrets = await generateSecrets(customSeed);
-  const wallet = new Wallet(await generatePrivateKey(customSeed));
+  let wallet: Wallet;
+  let mnemonic: string | undefined;
+
+  if (keyType === 'mnemonic') {
+    const mnemonicResult = await generateMnemonic(customSeed);
+    wallet = new Wallet(mnemonicResult.privateKey);
+    mnemonic = mnemonicResult.mnemonic;
+  } else {
+    wallet = new Wallet(await generatePrivateKey(customSeed));
+  }
 
   log("加密私鑰和秘密");
   const encryptedPrivateKey = encryptPrivateKey(wallet.privateKey, secrets);
@@ -227,22 +263,26 @@ async function generateAndEncryptWallet() {
   const encryptedSecrets = await encryptSecretsWithKMS(secrets, kmsKeyArn);
 
   log("錢包生成和加密完成");
-  return { wallet, kmsKeyArn, encryptedPrivateKey, encryptedSecrets };
+  return {
+    wallet,
+    kmsKeyArn,
+    encryptedPrivateKey,
+    encryptedSecrets,
+    mnemonic
+  };
 }
 
 async function saveToSecretsManagerAndBitwarden(wallet: Wallet, jsonData: any) {
   log("開始保存到 Secrets Manager 和 Bitwarden");
 
-  // 保存到 Secrets Manager
   const secretArn = process.env.SECRET_ARN!;
   log("保存到 Secrets Manager");
   await saveToSecretsManager(jsonData, secretArn);
 
-  // 檢查 BITWARDEN_ENABLED 環境變數
   if (process.env.BITWARDEN_ENABLED === 'true') {
     log("Bitwarden 已啟用，開始 Bitwarden 操作");
-    const bitwardenCollectionName = await getBitwardenCollectionName();
-    const bitwardenItemName = await getBitwardenItemName();
+    const bitwardenCollectionName = process.env.BITWARDEN_COLLECTION_NAME!;
+    const bitwardenItemName = process.env.BITWARDEN_ITEM_NAME!;
     log(`更新或創建 Bitwarden 項目: ${bitwardenItemName}`);
     await updateOrCreateBitwardenItem(wallet, bitwardenItemName, bitwardenCollectionName);
   } else {
@@ -252,20 +292,6 @@ async function saveToSecretsManagerAndBitwarden(wallet: Wallet, jsonData: any) {
   log("保存操作完成");
 }
 
-async function getBitwardenCollectionName(): Promise<string> {
-  listCollections();
-  let bitwardenCollectionName = process.env.BITWARDEN_COLLECTION_NAME || '';
-  const inputCollectionName = await getUserInput(`Enter Bitwarden collection name (press Enter to use default "${bitwardenCollectionName}"): `);
-  return inputCollectionName || bitwardenCollectionName;
-}
-
-async function getBitwardenItemName(): Promise<string> {
-  let bitwardenItemName = process.env.BITWARDEN_ITEM_NAME || '';
-  const inputItemName = await getUserInput(`Enter Bitwarden item name (press Enter to use default "${bitwardenItemName}"): `);
-  return inputItemName || bitwardenItemName;
-}
-
-// 添加一個簡單的日誌函數
 function log(message: string) {
   console.log(`[${new Date().toISOString()}] ${message}`);
 }
@@ -274,30 +300,43 @@ const main = async () => {
   log("開始主程序");
 
   try {
+    const keyType = options.keyType as KeyType;
+    if (!['private-key', 'mnemonic'].includes(keyType)) {
+      throw new Error('無效的 keyType，必須是 private-key 或 mnemonic');
+    }
+
+    process.env.BITWARDEN_ENABLED = options.bitwardenEnable ? 'true' : 'false';
+
     log("檢查必要的環境變量");
     checkRequiredEnvVars();
 
-    const { wallet, kmsKeyArn, encryptedPrivateKey, encryptedSecrets } = await generateAndEncryptWallet();
+    const result = await generateAndEncryptWallet(keyType, options.customSeed);
 
     log("準備 JSON 數據");
-    const jsonData = { kmsArn: kmsKeyArn, encryptedPrivateKey, encryptedSecrets };
+    const jsonData = {
+      kmsArn: result.kmsKeyArn,
+      encryptedPrivateKey: result.encryptedPrivateKey,
+      encryptedSecrets: result.encryptedSecrets
+    };
+
+    if (result.mnemonic) {
+      log(`生成的助記詞: ${result.mnemonic}`);
+    }
 
     log("開始保存數據");
-    await saveToSecretsManagerAndBitwarden(wallet, jsonData);
+    await saveToSecretsManagerAndBitwarden(result.wallet, jsonData);
 
     log("所有操作已成功完成");
-
-    // 印出錢包地址
-    log(`生成的錢包地址: ${wallet.address}`);
+    log(`生成的錢包地址: ${result.wallet.address}`);
   } catch (error) {
     console.error("發生錯誤:", error);
+    process.exit(1);
   }
 };
 
 function checkRequiredEnvVars() {
   const requiredEnvVars = ['KMS_KEY_ARN', 'SECRET_ARN'];
 
-  // 只有在 BITWARDEN_ENABLED 為 true 時才檢查 Bitwarden 相關的環境變量
   if (process.env.BITWARDEN_ENABLED === 'true') {
     requiredEnvVars.push('BW_SESSION', 'BITWARDEN_COLLECTION_NAME', 'BITWARDEN_ITEM_NAME');
   }

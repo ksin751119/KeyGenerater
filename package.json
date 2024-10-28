@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "jest",
-    "dev": "ts-node src/index.ts"
+    "dev": "ts-node src/index.ts",
+    "generate-key": "bash ./run_key_generate.sh"
   },
   "devDependencies": {
     "@types/jest": "^29.5.13",
@@ -23,6 +24,8 @@
   "dependencies": {
     "@aws-sdk/client-kms": "^3.675.0",
     "@aws-sdk/client-secrets-manager": "^3.675.0",
+    "bip39": "^3.1.0",
+    "commander": "^12.1.0",
     "dotenv": "^16.4.5",
     "ethers": "^6.13.4"
   }
