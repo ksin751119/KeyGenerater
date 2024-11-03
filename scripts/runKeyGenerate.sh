@@ -173,6 +173,8 @@ clear
 echo "=== 金鑰生成工具配置 ==="
 echo "------------------------"
 
+aws configure
+
 # AWS 相關配置
 ACCOUNT_ID=""
 while true; do
