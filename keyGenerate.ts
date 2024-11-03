@@ -31,15 +31,21 @@ program
   .option('--bitwardenEnable', '啟用 Bitwarden 整合', false)
   .option('--customSeed <seed>', '自定義種子')
   .option('--mnemonicLength <length>', '助記詞長度 (12 或 24)', '24')
+  .requiredOption('--kmsKeyArn <arn>', 'AWS KMS Key ARN')
+  .requiredOption('--secretArn <arn>', 'AWS Secrets Manager Secret ARN')
+  .requiredOption('--awsRegion <region>', 'AWS Region')
+  .option('--bitwardenSession <session>', 'Bitwarden Session Key')
+  .option('--bitwardenCollectionName <name>', 'Bitwarden Collection Name')
+  .option('--bitwardenItemName <name>', 'Bitwarden Item Name')
   .parse(process.argv);
 
 const options = program.opts();
 
-const secretsClient = new SecretsManagerClient({ region: process.env.AWS_REGION });
-const kmsClient = new KMSClient({ region: process.env.AWS_REGION });
+const secretsClient = new SecretsManagerClient({ region: options.awsRegion });
+const kmsClient = new KMSClient({ region: options.awsRegion });
 
 function runCommand(command: string): string {
-  return execSync(command, { encoding: 'utf-8' });
+  return execSync(command.replace('${process.env.BW_SESSION}', options.bitwardenSession), { encoding: 'utf-8' });
 }
 
 function listCollections(): void {
@@ -259,7 +265,7 @@ async function generateAndEncryptWallet(keyType: KeyType, customSeed?: string) {
 
   log("加密私鑰和秘密");
   const encryptedPrivateKey = encryptPrivateKey(wallet.privateKey, secrets);
-  const kmsKeyArn = process.env.KMS_KEY_ARN!;
+  const kmsKeyArn = options.kmsKeyArn;
   const encryptedSecrets = await encryptSecretsWithKMS(secrets, kmsKeyArn);
 
   log("錢包生成和加密完成");
@@ -275,14 +281,14 @@ async function generateAndEncryptWallet(keyType: KeyType, customSeed?: string) {
 async function saveToSecretsManagerAndBitwarden(wallet: Wallet, jsonData: any) {
   log("開始保存到 Secrets Manager 和 Bitwarden");
 
-  const secretArn = process.env.SECRET_ARN!;
+  const secretArn = options.secretArn;
   log("保存到 Secrets Manager");
   await saveToSecretsManager(jsonData, secretArn);
 
-  if (process.env.BITWARDEN_ENABLED === 'true') {
+  if (options.bitwardenEnable) {
     log("Bitwarden 已啟用，開始 Bitwarden 操作");
-    const bitwardenCollectionName = process.env.BITWARDEN_COLLECTION_NAME!;
-    const bitwardenItemName = process.env.BITWARDEN_ITEM_NAME!;
+    const bitwardenCollectionName = options.bitwardenCollectionName;
+    const bitwardenItemName = options.bitwardenItemName;
     log(`更新或創建 Bitwarden 項目: ${bitwardenItemName}`);
     await updateOrCreateBitwardenItem(wallet, bitwardenItemName, bitwardenCollectionName);
   } else {
@@ -335,15 +341,9 @@ const main = async () => {
 };
 
 function checkRequiredEnvVars() {
-  const requiredEnvVars = ['KMS_KEY_ARN', 'SECRET_ARN'];
-
-  if (process.env.BITWARDEN_ENABLED === 'true') {
-    requiredEnvVars.push('BW_SESSION', 'BITWARDEN_COLLECTION_NAME', 'BITWARDEN_ITEM_NAME');
-  }
-
-  for (const envVar of requiredEnvVars) {
-    if (!process.env[envVar]) {
-      throw new Error(`${envVar} environment variable is not set`);
+  if (options.bitwardenEnable) {
+    if (!options.bitwardenSession || !options.bitwardenCollectionName || !options.bitwardenItemName) {
+      throw new Error('當啟用 Bitwarden 時，必須提供 bitwardenSession、bitwardenCollectionName 和 bitwardenItemName');
     }
   }
 }
