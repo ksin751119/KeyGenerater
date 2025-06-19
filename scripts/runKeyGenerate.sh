@@ -173,31 +173,42 @@ clear
 echo "=== 金鑰生成工具配置 ==="
 echo "------------------------"
 
-aws configure
+# 詢問是否需要 AWS 登入
+NEED_AWS_LOGIN=false
+if confirm "是否需要進行 AWS 登入？"; then
+    NEED_AWS_LOGIN=true
+fi
 
-# AWS 相關配置
-ACCOUNT_ID=""
-while true; do
-    # 清除前一次的錯誤訊息
-    if [ -n "$ACCOUNT_ID" ]; then
-        echo "錯誤：AWS Account ID 必須是 12 位數字"
-    fi
+if [ "$NEED_AWS_LOGIN" = "true" ]; then
+    aws configure
 
-    # 讀取輸入
-    read -s -p "請輸入 AWS Account ID: " ACCOUNT_ID
-    echo  # 換行
+    # AWS 相關配置
+    ACCOUNT_ID=""
+    while true; do
+        # 清除前一次的錯誤訊息
+        if [ -n "$ACCOUNT_ID" ]; then
+            echo "錯誤：AWS Account ID 必須是 12 位數字"
+        fi
 
-    # 驗證輸入
-    if [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
-        break
-    fi
-done
+        # 讀取輸入
+        read -s -p "請輸入 AWS Account ID: " ACCOUNT_ID
+        echo  # 換行
 
-ASSUME_ROLE=$(read_input "請輸入 Role 名稱" "")
-AWS_REGION=$(read_input "請輸入 AWS Region" "")
+        # 驗證輸入
+        if [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            break
+        fi
+    done
 
-# 執行 AWS 登入
-aws_login
+    ASSUME_ROLE=$(read_input "請輸入 Role 名稱" "")
+    AWS_REGION=$(read_input "請輸入 AWS Region" "")
+
+    # 執行 AWS 登入
+    aws_login
+else
+    print_info "跳過 AWS 登入流程，請手動輸入 AWS 配置參數..."
+    AWS_REGION=$(read_input "請輸入 AWS Region" "eu-central-1")
+fi
 
 # KMS 和 Secret 配置（修改這部分）
 KMS_KEY_ARN=$(read_input "請輸入 KMS_KEY_ARN" "" "true")
@@ -272,7 +283,12 @@ fi
 # 顯示配置摘要
 echo -e "\n=== 配置摘要 ==="
 echo "AWS 配置:"
-echo "  ASSUME_ROLE: $ASSUME_ROLE"
+if [ "$NEED_AWS_LOGIN" = "true" ]; then
+    echo "  AWS_LOGIN: 已執行"
+    echo "  ASSUME_ROLE: $ASSUME_ROLE"
+else
+    echo "  AWS_LOGIN: 跳過"
+fi
 echo "  AWS_REGION: $AWS_REGION"
 echo "  KMS_KEY_ARN: ${KMS_KEY_ARN:0:20}...${KMS_KEY_ARN: -20}"
 echo "  SECRET_ARN: ${SECRET_ARN:0:20}...${SECRET_ARN: -20}"

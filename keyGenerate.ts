@@ -253,18 +253,19 @@ async function generateAndEncryptWallet(keyType: KeyType, customSeed?: string) {
   log("生成秘密和錢包");
   const secrets = await generateSecrets(customSeed);
   let wallet: Wallet;
-  let mnemonic: string | undefined;
+  let privateKey: string | undefined;
 
   if (keyType === 'mnemonic') {
     const mnemonicResult = await generateMnemonic(customSeed);
     wallet = new Wallet(mnemonicResult.privateKey);
-    mnemonic = mnemonicResult.mnemonic;
+    privateKey = mnemonicResult.mnemonic;
   } else {
     wallet = new Wallet(await generatePrivateKey(customSeed));
+    privateKey = wallet.privateKey;
   }
 
   log("加密私鑰和秘密");
-  const encryptedPrivateKey = encryptPrivateKey(wallet.privateKey, secrets);
+  const encryptedPrivateKey = encryptPrivateKey(privateKey, secrets);
   const kmsKeyArn = options.kmsKeyArn;
   const encryptedSecrets = await encryptSecretsWithKMS(secrets, kmsKeyArn);
 
@@ -274,7 +275,6 @@ async function generateAndEncryptWallet(keyType: KeyType, customSeed?: string) {
     kmsKeyArn,
     encryptedPrivateKey,
     encryptedSecrets,
-    mnemonic
   };
 }
 
@@ -324,10 +324,6 @@ const main = async () => {
       encryptedPrivateKey: result.encryptedPrivateKey,
       encryptedSecrets: result.encryptedSecrets
     };
-
-    if (result.mnemonic) {
-      log(`生成的助記詞: ${result.mnemonic}`);
-    }
 
     log("開始保存數據");
     await saveToSecretsManagerAndBitwarden(result.wallet, jsonData);
