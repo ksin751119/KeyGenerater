@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "test": "jest",
     "dev": "ts-node src/index.ts",
-    "generate-key": "bash ./scripts/runKeyGenerate.sh"
+    "generate-key": "bash ./scripts/runKeyGenerate.sh",
+    "generate-key-no-login": "bash ./scripts/runKeyGenerateNoLogin.sh"
   },
   "devDependencies": {
     "@types/jest": "^29.5.13",
