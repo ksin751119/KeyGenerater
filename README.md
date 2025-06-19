@@ -51,7 +51,9 @@ Edit the `run_key_generate.sh` file and set the following environment variables:
 
 Run the script:
 ```
-./run_key_generate.sh
+yarn
+npm run generate-key
+
 ```
 
 This will:
