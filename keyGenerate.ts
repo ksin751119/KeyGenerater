@@ -319,11 +319,17 @@ const main = async () => {
     const result = await generateAndEncryptWallet(keyType, options.customSeed);
 
     log("準備 JSON 數據");
-    const jsonData = {
+    const jsonData: any = {
       kmsArn: result.kmsKeyArn,
-      encryptedPrivateKey: result.encryptedPrivateKey,
       encryptedSecrets: result.encryptedSecrets
     };
+
+    // 根據金鑰類型決定欄位名稱
+    if (keyType === 'mnemonic') {
+      jsonData.encryptedMnemonicPhrase = result.encryptedPrivateKey;
+    } else {
+      jsonData.encryptedPrivateKey = result.encryptedPrivateKey;
+    }
 
     log("開始保存數據");
     await saveToSecretsManagerAndBitwarden(result.wallet, jsonData);
