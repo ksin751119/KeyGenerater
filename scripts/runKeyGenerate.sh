@@ -314,9 +314,19 @@ fi
 
 # 助記詞長度配置
 MNEMONIC_LENGTH="24"
+ADDRESS_COUNT="1"
 if [ "$KEY_TYPE" = "mnemonic" ]; then
     read -p "$(prompt "請選擇助記詞長度 (12 或 24): ")" input_length
     MNEMONIC_LENGTH=$(validate_number "$input_length" "12 24" "24")
+
+    # 詢問要顯示的地址數量
+    read -p "$(prompt "請輸入要顯示的地址數量 (1-100): ")" input_count
+    if [[ "$input_count" =~ ^[0-9]+$ ]] && [ "$input_count" -ge 1 ] && [ "$input_count" -le 100 ]; then
+        ADDRESS_COUNT="$input_count"
+    else
+        warn "無效的地址數量，使用預設值 1"
+        ADDRESS_COUNT="1"
+    fi
 fi
 
 # 顯示配置摘要
@@ -343,6 +353,7 @@ echo "金鑰配置:"
 echo "  KEY_TYPE: $KEY_TYPE"
 if [ "$KEY_TYPE" = "mnemonic" ]; then
     echo "  MNEMONIC_LENGTH: $MNEMONIC_LENGTH"
+    echo "  ADDRESS_COUNT: $ADDRESS_COUNT"
 fi
 if [ -n "$CUSTOM_SEED" ]; then
     echo "  使用自定義 SEED: 是"
@@ -376,6 +387,7 @@ fi
 
 if [ "$KEY_TYPE" = "mnemonic" ]; then
     CMD="$CMD --mnemonicLength $MNEMONIC_LENGTH"
+    CMD="$CMD --addressCount $ADDRESS_COUNT"
 fi
 
 if [ -n "$CUSTOM_SEED" ]; then

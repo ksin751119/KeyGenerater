@@ -35,6 +35,7 @@ program
   .option('--outputFile <file>', '本地輸出檔案路徑', './wallet-output.json')
   .option('--customSeed <seed>', '自定義種子')
   .option('--mnemonicLength <length>', '助記詞長度 (12 或 24)', '24')
+  .option('--addressCount <count>', '要顯示的地址數量 (僅限 mnemonic 模式)', '1')
   .option('--kmsKeyArn <arn>', 'AWS KMS Key ARN (localFileOnly 模式下非必需)')
   .option('--secretArn <arn>', 'AWS Secrets Manager Secret ARN (localFileOnly 模式下非必需)')
   .option('--awsRegion <region>', 'AWS Region (localFileOnly 模式下非必需)')
@@ -352,6 +353,30 @@ function log(message: string) {
   console.log(`[${new Date().toISOString()}] ${message}`);
 }
 
+function generateAddressesFromMnemonic(mnemonic: string, count: number): Array<{ index: number; address: string; privateKey: string }> {
+  const addresses: Array<{ index: number; address: string; privateKey: string }> = [];
+
+  for (let i = 0; i < count; i++) {
+    // 使用標準的 BIP44 路徑：m/44'/60'/0'/0/i (Ethereum)
+    const hdNode = HDNodeWallet.fromPhrase(mnemonic, undefined, `m/44'/60'/0'/0/${i}`);
+    addresses.push({
+      index: i,
+      address: hdNode.address,
+      privateKey: hdNode.privateKey
+    });
+  }
+
+  return addresses;
+}
+
+function displayAddresses(addresses: Array<{ index: number; address: string; privateKey: string }>) {
+  log("=== 衍生地址列表 ===");
+  addresses.forEach(addr => {
+    log(`地址 ${addr.index}: ${addr.address}`);
+  });
+  log("==================");
+}
+
 const main = async () => {
   log("開始主程序");
 
@@ -361,12 +386,25 @@ const main = async () => {
       throw new Error('無效的 keyType，必須是 private-key 或 mnemonic');
     }
 
+    // 驗證 addressCount 參數
+    const addressCount = parseInt(options.addressCount);
+    if (isNaN(addressCount) || addressCount < 1 || addressCount > 100) {
+      throw new Error('addressCount 必須是 1-100 之間的數字');
+    }
+
     process.env.BITWARDEN_ENABLED = options.bitwardenEnable ? 'true' : 'false';
 
     log("檢查必要的環境變量");
     checkRequiredEnvVars();
 
     const result = await generateAndEncryptWallet(keyType, options.customSeed);
+
+    // 如果是 mnemonic 模式且 addressCount > 1，顯示多個地址
+    if (keyType === 'mnemonic' && addressCount > 1) {
+      log(`顯示從助記詞衍生的 ${addressCount} 個地址`);
+      const addresses = generateAddressesFromMnemonic(result.rawData?.mnemonic || '', addressCount);
+      displayAddresses(addresses);
+    }
 
     if (options.localFileOnly) {
       log("本地檔案模式已啟用");
@@ -390,7 +428,7 @@ const main = async () => {
     }
 
     log("所有操作已成功完成");
-    log(`生成的錢包地址: ${result.wallet.address}`);
+    log(`主要錢包地址: ${result.wallet.address}`);
   } catch (error) {
     console.error("發生錯誤:", error);
     process.exit(1);
