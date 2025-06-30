@@ -173,9 +173,44 @@ clear
 echo "=== 金鑰生成工具配置 ==="
 echo "------------------------"
 
-# 詢問是否需要 AWS 登入
+# 首先詢問儲存模式
+LOCAL_FILE_ONLY=false
+echo -e "\n請選擇儲存模式："
+echo "1) 雲端加密儲存 (AWS Secrets Manager + 可選 Bitwarden)"
+echo "2) 本地檔案儲存 (僅儲存到本地檔案)"
+read -p "$(prompt "請輸入選項 (1/2): ")" storage_mode_choice
+
+case "$storage_mode_choice" in
+    1)
+        LOCAL_FILE_ONLY=false
+        print_info "選擇雲端加密儲存模式"
+        ;;
+    2)
+        LOCAL_FILE_ONLY=true
+        print_info "選擇本地檔案儲存模式"
+        ;;
+    *)
+        warn "無效的選擇，預設使用雲端加密儲存"
+        LOCAL_FILE_ONLY=false
+        ;;
+esac
+
+# 本地檔案模式的配置
+OUTPUT_FILE=""
+if [ "$LOCAL_FILE_ONLY" = "true" ]; then
+    OUTPUT_FILE=$(read_input "請輸入輸出檔案路徑" "./wallet-output.json")
+    warn "⚠️  本地檔案模式會將敏感資訊以明文形式儲存到本地檔案"
+    warn "⚠️  請確保檔案儲存在安全的位置並妥善保管"
+
+    if ! confirm "是否確認使用本地檔案模式？"; then
+        echo "操作已取消"
+        exit 0
+    fi
+fi
+
+# 詢問是否需要 AWS 登入（本地檔案模式下跳過）
 NEED_AWS_LOGIN=false
-if confirm "是否需要進行 AWS 登入？"; then
+if [ "$LOCAL_FILE_ONLY" = "false" ] && confirm "是否需要進行 AWS 登入？"; then
     NEED_AWS_LOGIN=true
 fi
 
@@ -205,27 +240,31 @@ if [ "$NEED_AWS_LOGIN" = "true" ]; then
 
     # 執行 AWS 登入
     aws_login
-else
+elif [ "$LOCAL_FILE_ONLY" = "false" ]; then
     print_info "跳過 AWS 登入流程，請手動輸入 AWS 配置參數..."
     AWS_REGION=$(read_input "請輸入 AWS Region" "eu-central-1")
 fi
 
-# KMS 和 Secret 配置（修改這部分）
-KMS_KEY_ARN=$(read_input "請輸入 KMS_KEY_ARN" "" "true")
-while [ -z "$KMS_KEY_ARN" ]; do
-    warn "KMS_KEY_ARN 不能為空"
+# KMS 和 Secret 配置（本地檔案模式下跳過）
+if [ "$LOCAL_FILE_ONLY" = "false" ]; then
     KMS_KEY_ARN=$(read_input "請輸入 KMS_KEY_ARN" "" "true")
-done
+    while [ -z "$KMS_KEY_ARN" ]; do
+        warn "KMS_KEY_ARN 不能為空"
+        KMS_KEY_ARN=$(read_input "請輸入 KMS_KEY_ARN" "" "true")
+    done
 
-SECRET_ARN=$(read_input "請輸入 SECRET_ARN" "" "true")
-while [ -z "$SECRET_ARN" ]; do
-    warn "SECRET_ARN 不能為空"
     SECRET_ARN=$(read_input "請輸入 SECRET_ARN" "" "true")
-done
+    while [ -z "$SECRET_ARN" ]; do
+        warn "SECRET_ARN 不能為空"
+        SECRET_ARN=$(read_input "請輸入 SECRET_ARN" "" "true")
+    done
+else
+    print_info "本地檔案模式，跳過 AWS 配置..."
+fi
 
-# Bitwarden 配置
+# Bitwarden 配置（本地檔案模式下跳過）
 BITWARDEN_ENABLED=false
-if confirm "是否需要使用 Bitwarden？"; then
+if [ "$LOCAL_FILE_ONLY" = "false" ] && confirm "是否需要使用 Bitwarden？"; then
     BITWARDEN_ENABLED=true
 
     BITWARDEN_COLLECTION_NAME=$(read_input "請輸入 BITWARDEN_COLLECTION_NAME" "")
@@ -282,18 +321,25 @@ fi
 
 # 顯示配置摘要
 echo -e "\n=== 配置摘要 ==="
-echo "AWS 配置:"
-if [ "$NEED_AWS_LOGIN" = "true" ]; then
-    echo "  AWS_LOGIN: 已執行"
-    echo "  ASSUME_ROLE: $ASSUME_ROLE"
+echo "儲存模式: $([ "$LOCAL_FILE_ONLY" = "true" ] && echo "本地檔案" || echo "雲端加密")"
+
+if [ "$LOCAL_FILE_ONLY" = "true" ]; then
+    echo "  輸出檔案: $OUTPUT_FILE"
 else
-    echo "  AWS_LOGIN: 跳過"
+    echo "AWS 配置:"
+    if [ "$NEED_AWS_LOGIN" = "true" ]; then
+        echo "  AWS_LOGIN: 已執行"
+        echo "  ASSUME_ROLE: $ASSUME_ROLE"
+    else
+        echo "  AWS_LOGIN: 跳過"
+    fi
+    echo "  AWS_REGION: $AWS_REGION"
+    echo "  KMS_KEY_ARN: ${KMS_KEY_ARN:0:20}...${KMS_KEY_ARN: -20}"
+    echo "  SECRET_ARN: ${SECRET_ARN:0:20}...${SECRET_ARN: -20}"
+    echo "  BITWARDEN_ENABLED: $BITWARDEN_ENABLED"
 fi
-echo "  AWS_REGION: $AWS_REGION"
-echo "  KMS_KEY_ARN: ${KMS_KEY_ARN:0:20}...${KMS_KEY_ARN: -20}"
-echo "  SECRET_ARN: ${SECRET_ARN:0:20}...${SECRET_ARN: -20}"
+
 echo "金鑰配置:"
-echo "  BITWARDEN_ENABLED: $BITWARDEN_ENABLED"
 echo "  KEY_TYPE: $KEY_TYPE"
 if [ "$KEY_TYPE" = "mnemonic" ]; then
     echo "  MNEMONIC_LENGTH: $MNEMONIC_LENGTH"
@@ -311,15 +357,21 @@ fi
 # 建構命令列參數
 CMD="npx ts-node keyGenerate.ts"
 CMD="$CMD --keyType $KEY_TYPE"
-CMD="$CMD --kmsKeyArn $KMS_KEY_ARN"
-CMD="$CMD --secretArn $SECRET_ARN"
-CMD="$CMD --awsRegion $AWS_REGION"
 
-if [ "$BITWARDEN_ENABLED" = "true" ]; then
-    CMD="$CMD --bitwardenEnable"
-    CMD="$CMD --bitwardenCollectionName \"$BITWARDEN_COLLECTION_NAME\""
-    CMD="$CMD --bitwardenItemName \"$BITWARDEN_ITEM_NAME\""
-    CMD="$CMD --bitwardenSession $BW_SESSION"
+if [ "$LOCAL_FILE_ONLY" = "true" ]; then
+    CMD="$CMD --localFileOnly"
+    CMD="$CMD --outputFile \"$OUTPUT_FILE\""
+else
+    CMD="$CMD --kmsKeyArn $KMS_KEY_ARN"
+    CMD="$CMD --secretArn $SECRET_ARN"
+    CMD="$CMD --awsRegion $AWS_REGION"
+
+    if [ "$BITWARDEN_ENABLED" = "true" ]; then
+        CMD="$CMD --bitwardenEnable"
+        CMD="$CMD --bitwardenCollectionName \"$BITWARDEN_COLLECTION_NAME\""
+        CMD="$CMD --bitwardenItemName \"$BITWARDEN_ITEM_NAME\""
+        CMD="$CMD --bitwardenSession $BW_SESSION"
+    fi
 fi
 
 if [ "$KEY_TYPE" = "mnemonic" ]; then

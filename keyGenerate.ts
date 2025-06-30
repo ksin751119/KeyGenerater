@@ -15,6 +15,8 @@ import { encryptData } from "./CryptoExUtils";
 import os from 'os';
 import * as bip39 from 'bip39';
 import { Command } from 'commander';
+import fs from 'fs';
+import path from 'path';
 
 dotenv.config();
 
@@ -29,11 +31,13 @@ const program = new Command();
 program
   .option('--keyType <type>', '指定金鑰類型 (private-key 或 mnemonic)', 'private-key')
   .option('--bitwardenEnable', '啟用 Bitwarden 整合', false)
+  .option('--localFileOnly', '只儲存到本地檔案，不上傳到雲端服務', false)
+  .option('--outputFile <file>', '本地輸出檔案路徑', './wallet-output.json')
   .option('--customSeed <seed>', '自定義種子')
   .option('--mnemonicLength <length>', '助記詞長度 (12 或 24)', '24')
-  .requiredOption('--kmsKeyArn <arn>', 'AWS KMS Key ARN')
-  .requiredOption('--secretArn <arn>', 'AWS Secrets Manager Secret ARN')
-  .requiredOption('--awsRegion <region>', 'AWS Region')
+  .option('--kmsKeyArn <arn>', 'AWS KMS Key ARN (localFileOnly 模式下非必需)')
+  .option('--secretArn <arn>', 'AWS Secrets Manager Secret ARN (localFileOnly 模式下非必需)')
+  .option('--awsRegion <region>', 'AWS Region (localFileOnly 模式下非必需)')
   .option('--bitwardenSession <session>', 'Bitwarden Session Key')
   .option('--bitwardenCollectionName <name>', 'Bitwarden Collection Name')
   .option('--bitwardenItemName <name>', 'Bitwarden Item Name')
@@ -247,6 +251,41 @@ async function updateOrCreateBitwardenItem(wallet: Wallet, itemName: string, col
   }
 }
 
+async function saveToLocalFile(wallet: Wallet, keyType: KeyType, data: { privateKey?: string; mnemonic?: string }) {
+  log("開始儲存到本地檔案");
+
+  const outputData = {
+    timestamp: new Date().toISOString(),
+    keyType: keyType,
+    address: wallet.address,
+    ...(keyType === 'mnemonic' ? {
+      mnemonic: data.mnemonic,
+      mnemonicLength: options.mnemonicLength
+    } : {
+      privateKey: data.privateKey
+    })
+  };
+
+  const outputFile = path.resolve(options.outputFile);
+
+  try {
+    // 確保輸出目錄存在
+    const outputDir = path.dirname(outputFile);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    // 寫入檔案
+    fs.writeFileSync(outputFile, JSON.stringify(outputData, null, 2), 'utf-8');
+
+    log(`錢包資訊已成功儲存到: ${outputFile}`);
+    log("⚠️  請妥善保管此檔案，並確保其安全性！");
+  } catch (error) {
+    console.error("儲存本地檔案時發生錯誤:", error);
+    throw error;
+  }
+}
+
 async function generateAndEncryptWallet(keyType: KeyType, customSeed?: string) {
   log(`開始生成和加密錢包 (類型: ${keyType})`);
 
@@ -254,18 +293,29 @@ async function generateAndEncryptWallet(keyType: KeyType, customSeed?: string) {
   const secrets = await generateSecrets(customSeed);
   let wallet: Wallet;
   let privateKey: string | undefined;
+  let mnemonic: string | undefined;
 
   if (keyType === 'mnemonic') {
     const mnemonicResult = await generateMnemonic(customSeed);
     wallet = new Wallet(mnemonicResult.privateKey);
-    privateKey = mnemonicResult.mnemonic;
+    mnemonic = mnemonicResult.mnemonic;
+    privateKey = mnemonicResult.privateKey;
   } else {
     wallet = new Wallet(await generatePrivateKey(customSeed));
     privateKey = wallet.privateKey;
   }
 
+  // 如果是本地檔案模式，不進行加密
+  if (options.localFileOnly) {
+    log("本地檔案模式，跳過加密步驟");
+    return {
+      wallet,
+      rawData: { privateKey, mnemonic }
+    };
+  }
+
   log("加密私鑰和秘密");
-  const encryptedPrivateKey = encryptPrivateKey(privateKey, secrets);
+  const encryptedPrivateKey = encryptPrivateKey(keyType === 'mnemonic' ? mnemonic! : privateKey!, secrets);
   const kmsKeyArn = options.kmsKeyArn;
   const encryptedSecrets = await encryptSecretsWithKMS(secrets, kmsKeyArn);
 
@@ -318,21 +368,26 @@ const main = async () => {
 
     const result = await generateAndEncryptWallet(keyType, options.customSeed);
 
-    log("準備 JSON 數據");
-    const jsonData: any = {
-      kmsArn: result.kmsKeyArn,
-      encryptedSecrets: result.encryptedSecrets
-    };
-
-    // 根據金鑰類型決定欄位名稱
-    if (keyType === 'mnemonic') {
-      jsonData.encryptedMnemonicPhrase = result.encryptedPrivateKey;
+    if (options.localFileOnly) {
+      log("本地檔案模式已啟用");
+      await saveToLocalFile(result.wallet, keyType, result.rawData!);
     } else {
-      jsonData.encryptedPrivateKey = result.encryptedPrivateKey;
-    }
+      log("準備 JSON 數據");
+      const jsonData: any = {
+        kmsArn: result.kmsKeyArn,
+        encryptedSecrets: result.encryptedSecrets
+      };
 
-    log("開始保存數據");
-    await saveToSecretsManagerAndBitwarden(result.wallet, jsonData);
+      // 根據金鑰類型決定欄位名稱
+      if (keyType === 'mnemonic') {
+        jsonData.encryptedMnemonicPhrase = result.encryptedPrivateKey;
+      } else {
+        jsonData.encryptedPrivateKey = result.encryptedPrivateKey;
+      }
+
+      log("開始保存數據");
+      await saveToSecretsManagerAndBitwarden(result.wallet, jsonData);
+    }
 
     log("所有操作已成功完成");
     log(`生成的錢包地址: ${result.wallet.address}`);
@@ -343,6 +398,17 @@ const main = async () => {
 };
 
 function checkRequiredEnvVars() {
+  // 本地檔案模式下，不需要檢查 AWS 相關參數
+  if (options.localFileOnly) {
+    log("本地檔案模式，跳過 AWS 環境變量檢查");
+    return;
+  }
+
+  // 檢查 AWS 相關參數
+  if (!options.kmsKeyArn || !options.secretArn || !options.awsRegion) {
+    throw new Error('非本地檔案模式時，必須提供 kmsKeyArn、secretArn 和 awsRegion');
+  }
+
   if (options.bitwardenEnable) {
     if (!options.bitwardenSession || !options.bitwardenCollectionName || !options.bitwardenItemName) {
       throw new Error('當啟用 Bitwarden 時，必須提供 bitwardenSession、bitwardenCollectionName 和 bitwardenItemName');
