@@ -326,6 +326,8 @@ async function generateAndEncryptWallet(keyType: KeyType, customSeed?: string) {
     kmsKeyArn,
     encryptedPrivateKey,
     encryptedSecrets,
+    // 保留助記詞用於地址衍生（僅在記憶體中，不儲存到檔案）
+    mnemonic: keyType === 'mnemonic' ? mnemonic : undefined
   };
 }
 
@@ -402,7 +404,12 @@ const main = async () => {
     // 如果是 mnemonic 模式且 addressCount > 1，顯示多個地址
     if (keyType === 'mnemonic' && addressCount > 1) {
       log(`顯示從助記詞衍生的 ${addressCount} 個地址`);
-      const addresses = generateAddressesFromMnemonic(result.rawData?.mnemonic || '', addressCount);
+      // 優先使用 result.mnemonic，再回退到 result.rawData?.mnemonic
+      const mnemonicToUse = result.mnemonic || result.rawData?.mnemonic;
+      if (!mnemonicToUse) {
+        throw new Error('無法取得助記詞用於地址衍生');
+      }
+      const addresses = generateAddressesFromMnemonic(mnemonicToUse, addressCount);
       displayAddresses(addresses);
     }
 
